@@ -23,25 +23,35 @@ pip install -r requirements.txt
 
 ## 🧑‍💻 Usage
 
-1. Place your historical commodity price data in the `data/` directory.
-2. Run the main prediction script:
-
+1. Install dependencies:
 ```bash
-python agripricepredictor.py
+pip install -r requirements.txt
 ```
 
-3. View forecasts and visualizations in the `output/` directory.
+2. Run the primary prediction script (monthly data):
+```bash
+streamlit run AgriPredict.py
+```
+
+3. Alternatively, run the annual data prediction script:
+```bash
+streamlit run agripricepredictor.py
+```
+
+Note: Both scripts use Streamlit for the interactive interface. The scripts will automatically load the appropriate datasets and provide a web interface for commodity selection and forecasting.
 
 ## 📁 Project Structure
 
 ```
 Agrimetaverse-Intelligence/
-├── data/                # Input datasets
-├── output/              # Generated forecasts and plots
-├── agripricepredictor.py
-├── requirements.txt
-├── LICENSE
-└── README.md
+├── AgriPredict.py              # Primary SARIMAX forecasting script
+├── agripricepredictor.py       # Alternative prediction script
+├── datamain.csv                # Main dataset (monthly data)
+├── DatasetSIH1647.csv          # Annual aggregated dataset
+├── requirements.txt            # Python dependencies
+├── LICENSE                     # MIT License
+├── .gitignore                  # Git ignore rules
+└── README.md                   # Project documentation
 ```
 
 ## 🤝 Contributing
