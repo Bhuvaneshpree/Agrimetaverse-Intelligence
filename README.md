@@ -54,8 +54,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-<<<<<<< HEAD
 *Empowering the agricultural sector with AI-driven insight!*
-=======
-*Empowering the agricultural sector with AI-driven insight!*
->>>>>>> 5a8d3f6 (Initial commit: migrated and rebranded project)
