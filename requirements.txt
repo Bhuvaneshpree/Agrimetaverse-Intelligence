@@ -3,3 +3,7 @@ statsmodels
 pandas
 numpy
 matplotlib
+prophet
+xgboost
+scikit-learn
+seaborn
