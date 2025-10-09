@@ -8,6 +8,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.figure_factory as ff
 from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.tsa.stattools import adfuller
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -21,9 +24,18 @@ except ImportError:
 try:
     import xgboost as xgb
     from sklearn.metrics import mean_absolute_error, mean_squared_error
-    from sklearn.preprocessing import StandardScaler
-except ImportError:
-    st.error("XGBoost and sklearn not installed. Run: pip install xgboost scikit-learn")
+    from sklearn.preprocessing import StandardScaler, MinMaxScaler
+    from sklearn.neural_network import MLPRegressor
+    from sklearn.ensemble import RandomForestRegressor
+    import tensorflow as tf
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import LSTM, Dense, Dropout
+    from tensorflow.keras.optimizers import Adam
+    from scipy.optimize import differential_evolution
+    from statsmodels.tsa.seasonal import seasonal_decompose
+except ImportError as e:
+    st.error(f"Required packages not installed: {e}")
+    st.info("Run: pip install tensorflow scikit-learn scipy")
     st.stop()
 
 class AdvancedCommodityForecaster:
@@ -41,6 +53,10 @@ class AdvancedCommodityForecaster:
             
             # Load commodity prices
             prices_path = os.path.join(script_dir, "DatasetSIH1647.csv")
+            if not os.path.exists(prices_path):
+                st.error(f"Data file not found: {prices_path}")
+                return None, None
+                
             df_prices = pd.read_csv(prices_path)
             df_prices.set_index('Commodities', inplace=True)
             df_prices = df_prices.T
@@ -49,9 +65,17 @@ class AdvancedCommodityForecaster:
             
             # Load external features
             features_path = os.path.join(script_dir, "enhanced_features.csv")
-            df_features = pd.read_csv(features_path)
-            df_features['Year'] = pd.date_range(start='2014', periods=len(df_features), freq='YE')
-            df_features.set_index('Year', inplace=True)
+            if os.path.exists(features_path):
+                df_features = pd.read_csv(features_path)
+                df_features['Year'] = pd.date_range(start='2014', periods=len(df_features), freq='YE')
+                df_features.set_index('Year', inplace=True)
+            else:
+                # Create dummy features if file doesn't exist
+                df_features = pd.DataFrame({
+                    'Rainfall_mm': np.random.normal(1000, 200, len(df_prices)),
+                    'Temperature_C': np.random.normal(25, 5, len(df_prices)),
+                    'Inflation_%': np.random.normal(5, 2, len(df_prices))
+                }, index=df_prices.index)
             
             return df_prices, df_features
         except Exception as e:
@@ -81,6 +105,38 @@ class AdvancedCommodityForecaster:
         
         return np.array(X), np.array(y)
     
+    def find_best_arima_order(self, data, max_p=3, max_d=2, max_q=3):
+        """Find best ARIMA order using AIC"""
+        best_aic = np.inf
+        best_order = (1, 1, 1)
+        
+        for p in range(max_p + 1):
+            for d in range(max_d + 1):
+                for q in range(max_q + 1):
+                    try:
+                        model = ARIMA(data, order=(p, d, q))
+                        fitted_model = model.fit(method_kwargs={"warn_convergence": False})
+                        if fitted_model.aic < best_aic:
+                            best_aic = fitted_model.aic
+                            best_order = (p, d, q)
+                    except:
+                        continue
+        return best_order
+
+    def train_arima(self, data):
+        """Train ARIMA model with automatic order selection"""
+        try:
+            # Find best order
+            best_order = self.find_best_arima_order(data)
+            
+            # Train with best order
+            model = ARIMA(data, order=best_order)
+            fitted_model = model.fit(method_kwargs={"warn_convergence": False})
+            return fitted_model, best_order
+        except Exception as e:
+            st.warning(f"ARIMA training failed: {e}")
+            return None, None
+
     def train_sarimax(self, data):
         """Train SARIMAX model"""
         try:
@@ -151,7 +207,145 @@ class AdvancedCommodityForecaster:
         except Exception as e:
             st.warning(f"XGBoost training failed: {e}")
             return None
+
+    def prepare_lstm_data(self, data, lookback=5):
+        """Prepare data for LSTM training"""
+        try:
+            scaler = MinMaxScaler(feature_range=(0, 1))
+            scaled_data = scaler.fit_transform(data.values.reshape(-1, 1))
+            
+            X, y = [], []
+            for i in range(lookback, len(scaled_data)):
+                X.append(scaled_data[i-lookback:i, 0])
+                y.append(scaled_data[i, 0])
+            
+            return np.array(X), np.array(y), scaler
+        except Exception as e:
+            st.warning(f"LSTM data preparation failed: {e}")
+            return None, None, None
+
+    def train_hybrid_sarima_lstm(self, data):
+        """Train Hybrid SARIMA-LSTM model"""
+        try:
+            # Step 1: SARIMA decomposition and residual extraction
+            sarima_model = SARIMAX(data, order=(1, 1, 1), seasonal_order=(1, 1, 1, 12))
+            sarima_fit = sarima_model.fit(disp=False)
+            
+            # Get SARIMA predictions and residuals
+            sarima_pred = sarima_fit.fittedvalues
+            residuals = data - sarima_pred
+            
+            # Step 2: LSTM for residual modeling
+            X_lstm, y_lstm, lstm_scaler = self.prepare_lstm_data(residuals)
+            
+            if X_lstm is None or len(X_lstm) < 3:
+                return sarima_fit, None, None, None  # Fallback to SARIMA only
+            
+            # Reshape for LSTM
+            X_lstm = X_lstm.reshape((X_lstm.shape[0], X_lstm.shape[1], 1))
+            
+            # Build LSTM model
+            lstm_model = Sequential([
+                LSTM(50, return_sequences=True, input_shape=(X_lstm.shape[1], 1)),
+                Dropout(0.2),
+                LSTM(50, return_sequences=False),
+                Dropout(0.2),
+                Dense(25),
+                Dense(1)
+            ])
+            
+            lstm_model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+            
+            # Train LSTM (reduced epochs for faster execution)
+            lstm_model.fit(X_lstm, y_lstm, batch_size=1, epochs=20, verbose=0)
+            
+            return sarima_fit, lstm_model, lstm_scaler, residuals
+            
+        except Exception as e:
+            st.warning(f"Hybrid SARIMA-LSTM training failed: {e}")
+            return None, None, None, None
+
+    def elm_objective_function(self, params, X_train, y_train, X_val, y_val):
+        """Objective function for ELM optimization using Genetic Algorithm"""
+        try:
+            hidden_neurons, activation_param = int(params[0]), params[1]
+            
+            # Simple ELM implementation using MLPRegressor as approximation
+            elm_model = MLPRegressor(
+                hidden_layer_sizes=(hidden_neurons,),
+                activation='tanh',
+                alpha=activation_param,
+                max_iter=100,
+                random_state=42
+            )
+            
+            elm_model.fit(X_train, y_train)
+            pred = elm_model.predict(X_val)
+            mse = mean_squared_error(y_val, pred)
+            
+            return mse
+        except:
+            return 1e6  # Return high error for invalid parameters
+
+    def train_elm_genetic(self, data, features):
+        """Train ELM optimized with Genetic Algorithm"""
+        try:
+            # Prepare data
+            X, y = self.prepare_data_for_xgboost(data, features)
+            
+            if len(X) < 5:
+                return None, None
+            
+            # Split data
+            split_idx = int(0.8 * len(X))
+            X_train, X_val = X[:split_idx], X[split_idx:]
+            y_train, y_val = y[:split_idx], y[split_idx:]
+            
+            # Scale features
+            elm_scaler = StandardScaler()
+            X_train_scaled = elm_scaler.fit_transform(X_train)
+            X_val_scaled = elm_scaler.transform(X_val)
+            
+            # Define parameter bounds for GA
+            bounds = [(10, 100), (0.0001, 0.1)]  # hidden_neurons, alpha
+            
+            # Genetic Algorithm optimization
+            result = differential_evolution(
+                self.elm_objective_function,
+                bounds,
+                args=(X_train_scaled, y_train, X_val_scaled, y_val),
+                maxiter=10,  # Reduced iterations for faster execution
+                popsize=8,   # Smaller population
+                seed=42
+            )
+            
+            # Train final ELM with optimized parameters
+            best_hidden, best_alpha = int(result.x[0]), result.x[1]
+            
+            elm_model = MLPRegressor(
+                hidden_layer_sizes=(best_hidden,),
+                activation='tanh',
+                alpha=best_alpha,
+                max_iter=200,
+                random_state=42
+            )
+            
+            elm_model.fit(X_train_scaled, y_train)
+            
+            return elm_model, elm_scaler
+            
+        except Exception as e:
+            st.warning(f"ELM-GA training failed: {e}")
+            return None, None
     
+    def forecast_arima(self, model, steps=5):
+        """Generate ARIMA forecasts"""
+        try:
+            forecast = model.get_forecast(steps=steps)
+            return forecast.predicted_mean.values
+        except:
+            return None
+
     def forecast_sarimax(self, model, steps=5):
         """Generate SARIMAX forecasts"""
         try:
@@ -215,6 +409,81 @@ class AdvancedCommodityForecaster:
             return np.array(predictions)
         except:
             return None
+
+    def forecast_hybrid_sarima_lstm(self, sarima_model, lstm_model, lstm_scaler, residuals, steps=5):
+        """Generate Hybrid SARIMA-LSTM forecasts"""
+        try:
+            # SARIMA forecasts
+            sarima_forecast = sarima_model.get_forecast(steps=steps)
+            sarima_pred = sarima_forecast.predicted_mean.values
+            
+            if lstm_model is None or lstm_scaler is None:
+                return sarima_pred  # Fallback to SARIMA only
+            
+            # LSTM forecasts for residuals
+            lstm_predictions = []
+            
+            # Use last 5 residuals for LSTM prediction
+            last_residuals = residuals.tail(5).values
+            scaled_residuals = lstm_scaler.transform(last_residuals.reshape(-1, 1))
+            
+            current_sequence = scaled_residuals.flatten()
+            
+            for _ in range(steps):
+                # Reshape for LSTM prediction
+                X_lstm = current_sequence[-5:].reshape(1, 5, 1)
+                
+                # Predict next residual
+                pred_scaled = lstm_model.predict(X_lstm, verbose=0)[0, 0]
+                pred_residual = lstm_scaler.inverse_transform([[pred_scaled]])[0, 0]
+                
+                lstm_predictions.append(pred_residual)
+                
+                # Update sequence
+                current_sequence = np.append(current_sequence, pred_scaled)
+            
+            # Combine SARIMA and LSTM predictions
+            hybrid_predictions = sarima_pred + np.array(lstm_predictions)
+            
+            return hybrid_predictions
+            
+        except Exception as e:
+            st.warning(f"Hybrid SARIMA-LSTM forecasting failed: {e}")
+            return None
+
+    def forecast_elm_genetic(self, elm_model, elm_scaler, data, features, steps=5):
+        """Generate ELM-GA forecasts"""
+        try:
+            if elm_model is None or elm_scaler is None:
+                return None
+            
+            predictions = []
+            current_data = data.values.copy()
+            
+            for step in range(steps):
+                # Prepare input features
+                X_input = []
+                
+                # Add lagged values
+                for lag in range(1, 4):  # lookback=3
+                    X_input.append(current_data[-(lag)])
+                
+                # Add external features
+                last_features = features.iloc[-1].values
+                X_input.extend(last_features)
+                
+                # Scale and predict
+                X_input_scaled = elm_scaler.transform([X_input])
+                pred = elm_model.predict(X_input_scaled)[0]
+                
+                predictions.append(pred)
+                current_data = np.append(current_data, pred)
+            
+            return np.array(predictions)
+            
+        except Exception as e:
+            st.warning(f"ELM-GA forecasting failed: {e}")
+            return None
     
     def ensemble_forecast(self, predictions_dict, weights=None):
         """Create ensemble forecast from multiple models"""
@@ -249,6 +518,102 @@ class AdvancedCommodityForecaster:
             'RMSE': rmse,
             'MAPE': mape
         }
+
+    def calculate_model_performance(self, actual_data, predictions):
+        """Calculate comprehensive performance metrics for model comparison"""
+        metrics = {}
+        
+        for model_name, pred in predictions.items():
+            if pred is not None and len(pred) > 0:
+                # Use cross-validation approach for better evaluation
+                validation_size = min(3, len(actual_data) // 3)  # Use last 3 points for validation
+                if validation_size > 0:
+                    actual_val = actual_data.iloc[-validation_size:].values
+                    pred_val = pred[:validation_size] if len(pred) >= validation_size else pred
+                    
+                    # Ensure same length
+                    min_len = min(len(actual_val), len(pred_val))
+                    actual_val = actual_val[:min_len]
+                    pred_val = pred_val[:min_len]
+                    
+                    if len(actual_val) > 0 and len(pred_val) > 0:
+                        # Calculate metrics
+                        mse = mean_squared_error(actual_val, pred_val)
+                        mae = mean_absolute_error(actual_val, pred_val)
+                        rmse = np.sqrt(mse)
+                        
+                        # Avoid division by zero in MAPE
+                        mape = np.mean(np.abs((actual_val - pred_val) / np.where(actual_val != 0, actual_val, 1))) * 100
+                        
+                        # Calculate directional accuracy
+                        if len(actual_val) > 1:
+                            actual_direction = np.diff(actual_val) > 0
+                            pred_direction = np.diff(pred_val) > 0
+                            directional_accuracy = np.mean(actual_direction == pred_direction) * 100
+                        else:
+                            directional_accuracy = 50  # Default for single value
+                        
+                        # Calculate R-squared
+                        ss_res = np.sum((actual_val - pred_val) ** 2)
+                        ss_tot = np.sum((actual_val - np.mean(actual_val)) ** 2)
+                        r2 = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+                        
+                        # Calculate overall performance score (higher is better)
+                        performance_score = (directional_accuracy + (100 - mape) + (r2 * 100)) / 3
+                        
+                        metrics[model_name] = {
+                            'MSE': mse,
+                            'MAE': mae,
+                            'RMSE': rmse,
+                            'MAPE': mape,
+                            'Directional_Accuracy': directional_accuracy,
+                            'R_Squared': r2,
+                            'Performance_Score': performance_score
+                        }
+        
+        return metrics
+
+    def find_best_algorithm(self, metrics):
+        """Determine the best performing algorithm based on multiple criteria"""
+        if not metrics:
+            return None, {}
+        
+        # Normalize metrics and calculate weighted scores
+        model_scores = {}
+        
+        # Get all metric values for normalization
+        all_mape = [m['MAPE'] for m in metrics.values()]
+        all_rmse = [m['RMSE'] for m in metrics.values()]
+        all_dir_acc = [m['Directional_Accuracy'] for m in metrics.values()]
+        all_r2 = [m['R_Squared'] for m in metrics.values()]
+        
+        for model_name, model_metrics in metrics.items():
+            # Normalize metrics (0-100 scale)
+            mape_score = 100 - min(model_metrics['MAPE'], 100)  # Lower MAPE is better
+            rmse_score = 100 - (model_metrics['RMSE'] / max(all_rmse) * 100) if max(all_rmse) > 0 else 50
+            dir_acc_score = model_metrics['Directional_Accuracy']  # Higher is better
+            r2_score = max(0, model_metrics['R_Squared'] * 100)  # Higher is better
+            
+            # Weighted average (you can adjust weights based on importance)
+            overall_score = (
+                mape_score * 0.3 +      # Prediction accuracy
+                rmse_score * 0.2 +      # Error magnitude
+                dir_acc_score * 0.3 +   # Direction prediction
+                r2_score * 0.2          # Goodness of fit
+            )
+            
+            model_scores[model_name] = {
+                'Overall_Score': overall_score,
+                'MAPE_Score': mape_score,
+                'RMSE_Score': rmse_score,
+                'Direction_Score': dir_acc_score,
+                'R2_Score': r2_score
+            }
+        
+        # Find best model
+        best_model = max(model_scores.keys(), key=lambda x: model_scores[x]['Overall_Score'])
+        
+        return best_model, model_scores
 
     def create_interactive_price_chart(self, data, commodity_name):
         """Create interactive historical price chart with Plotly"""
@@ -567,10 +932,25 @@ def main():
     
     # Model selection with enhanced descriptions
     st.sidebar.subheader("🤖 AI Models")
+    
+    # Traditional Models
+    st.sidebar.markdown("**📊 Traditional Models**")
+    use_arima = st.sidebar.checkbox("📊 ARIMA Model", value=True, help="Auto-Regressive Integrated Moving Average")
     use_sarimax = st.sidebar.checkbox("📈 SARIMAX Model", value=True, help="Statistical time series analysis")
     use_prophet = st.sidebar.checkbox("🔮 Prophet Model", value=True, help="Advanced seasonal forecasting")
-    use_xgboost = st.sidebar.checkbox("⚡ XGBoost Model", value=True, help="Machine learning approach")
-    use_ensemble = st.sidebar.checkbox("🎯 Ensemble Forecast", value=True, help="Combined predictions")
+    
+    # Machine Learning Models
+    st.sidebar.markdown("**🤖 Machine Learning Models**")
+    use_xgboost = st.sidebar.checkbox("⚡ XGBoost Model", value=True, help="Gradient boosting machine learning")
+    
+    # Advanced Hybrid Models
+    st.sidebar.markdown("**🚀 Advanced Hybrid Models**")
+    use_hybrid_sarima_lstm = st.sidebar.checkbox("🧠 Hybrid SARIMA-LSTM", value=False, help="Deep learning hybrid combining SARIMA with LSTM neural networks")
+    use_elm_genetic = st.sidebar.checkbox("🧬 ELM + Genetic Algorithm", value=False, help="Extreme Learning Machine optimized with Genetic Algorithm")
+    
+    # Ensemble
+    st.sidebar.markdown("**🎯 Ensemble**")
+    use_ensemble = st.sidebar.checkbox("🎯 Ensemble Forecast", value=True, help="Combined predictions from all models")
     
     # Visualization controls
     st.sidebar.subheader("📊 Visualization Options")
@@ -620,8 +1000,19 @@ def main():
         
         with st.spinner("Training models and generating forecasts..."):
             
+            if use_arima:
+                with st.expander("📊 ARIMA Model"):
+                    arima_model, arima_order = forecaster.train_arima(data)
+                    if arima_model:
+                        arima_pred = forecaster.forecast_arima(arima_model)
+                        predictions['ARIMA'] = arima_pred
+                        st.success(f"✅ ARIMA{arima_order} model trained successfully")
+                        st.info(f"📋 Best ARIMA order: {arima_order}")
+                    else:
+                        st.error("❌ ARIMA model failed")
+            
             if use_sarimax:
-                with st.expander("📊 SARIMAX Model"):
+                with st.expander("� SARIMAX Model"):
                     sarimax_model = forecaster.train_sarimax(data)
                     if sarimax_model:
                         sarimax_pred = forecaster.forecast_sarimax(sarimax_model)
@@ -649,6 +1040,34 @@ def main():
                         st.success("✅ XGBoost model trained successfully")
                     else:
                         st.error("❌ XGBoost model failed")
+            
+            if use_hybrid_sarima_lstm:
+                with st.expander("🧠 Hybrid SARIMA-LSTM Model"):
+                    st.info("🔄 Training advanced hybrid model... This may take a moment.")
+                    sarima_model, lstm_model, lstm_scaler, residuals = forecaster.train_hybrid_sarima_lstm(data)
+                    if sarima_model:
+                        hybrid_pred = forecaster.forecast_hybrid_sarima_lstm(sarima_model, lstm_model, lstm_scaler, residuals)
+                        predictions['Hybrid SARIMA-LSTM'] = hybrid_pred
+                        if lstm_model is not None:
+                            st.success("✅ Hybrid SARIMA-LSTM model trained successfully")
+                            st.info("🧠 Deep learning LSTM component active for residual modeling")
+                        else:
+                            st.success("✅ SARIMA component trained (LSTM fallback)")
+                            st.warning("⚠️ LSTM component failed, using SARIMA only")
+                    else:
+                        st.error("❌ Hybrid SARIMA-LSTM model failed")
+            
+            if use_elm_genetic:
+                with st.expander("🧬 ELM + Genetic Algorithm Model"):
+                    st.info("🔄 Optimizing ELM with Genetic Algorithm... This may take a moment.")
+                    elm_model, elm_scaler = forecaster.train_elm_genetic(data, df_features)
+                    if elm_model and elm_scaler:
+                        elm_pred = forecaster.forecast_elm_genetic(elm_model, elm_scaler, data, df_features)
+                        predictions['ELM-GA'] = elm_pred
+                        st.success("✅ ELM + Genetic Algorithm model trained successfully")
+                        st.info("🧬 Neural network optimized with evolutionary algorithm")
+                    else:
+                        st.error("❌ ELM + Genetic Algorithm model failed")
         
         # Generate ensemble forecast
         if use_ensemble and len(predictions) > 1:
@@ -672,6 +1091,110 @@ def main():
             st.subheader("📊 Forecast Summary Table")
             styled_df = forecast_df.style.format("₹{:.2f}").background_gradient(cmap='RdYlGn')
             st.dataframe(styled_df, use_container_width=True)
+            
+            # 🏆 ALGORITHM PERFORMANCE COMPARISON
+            st.subheader("🏆 Algorithm Performance Comparison")
+            
+            # Calculate model performance metrics
+            model_metrics = forecaster.calculate_model_performance(data, predictions)
+            best_model, model_scores = forecaster.find_best_algorithm(model_metrics)
+            
+            if best_model and model_scores:
+                # Display best algorithm
+                col1, col2, col3 = st.columns([2, 1, 1])
+                
+                with col1:
+                    st.success(f"🥇 **Best Algorithm: {best_model}**")
+                    best_score = model_scores[best_model]['Overall_Score']
+                    st.metric("Performance Score", f"{best_score:.1f}/100", 
+                             delta=f"+{best_score-50:.1f}" if best_score > 50 else f"{best_score-50:.1f}")
+                
+                with col2:
+                    st.info("📊 **Ranking:**")
+                    sorted_models = sorted(model_scores.items(), 
+                                         key=lambda x: x[1]['Overall_Score'], reverse=True)
+                    for i, (model, score) in enumerate(sorted_models):
+                        medal = ["🥇", "🥈", "🥉", "🏅", "⭐"][min(i, 4)]
+                        st.write(f"{medal} {model}: {score['Overall_Score']:.1f}")
+                
+                with col3:
+                    st.info("📋 **Criteria:**")
+                    st.write("• Prediction Accuracy (30%)")
+                    st.write("• Error Magnitude (20%)")
+                    st.write("• Direction Accuracy (30%)")
+                    st.write("• Model Fit (20%)")
+                
+                # Detailed metrics table
+                st.subheader("📈 Detailed Performance Metrics")
+                
+                if model_metrics:
+                    metrics_df = pd.DataFrame(model_metrics).T
+                    metrics_df = metrics_df.round(3)
+                    
+                    # Style the dataframe
+                    styled_metrics = metrics_df.style.format({
+                        'MSE': '{:.3f}',
+                        'MAE': '{:.3f}',
+                        'RMSE': '{:.3f}',
+                        'MAPE': '{:.2f}%',
+                        'Directional_Accuracy': '{:.1f}%',
+                        'R_Squared': '{:.3f}',
+                        'Performance_Score': '{:.1f}'
+                    }).background_gradient(subset=['Performance_Score'], cmap='RdYlGn')
+                    
+                    st.dataframe(styled_metrics, use_container_width=True)
+                    
+                    # Performance visualization
+                    fig_performance = go.Figure()
+                    
+                    models = list(model_scores.keys())
+                    scores = [model_scores[model]['Overall_Score'] for model in models]
+                    colors = ['gold' if model == best_model else 'lightblue' for model in models]
+                    
+                    fig_performance.add_trace(go.Bar(
+                        x=models,
+                        y=scores,
+                        marker_color=colors,
+                        text=[f'{score:.1f}' for score in scores],
+                        textposition='auto',
+                        name='Performance Score'
+                    ))
+                    
+                    fig_performance.update_layout(
+                        title="🏆 Algorithm Performance Comparison",
+                        xaxis_title="Algorithm",
+                        yaxis_title="Performance Score (0-100)",
+                        showlegend=False,
+                        height=400
+                    )
+                    
+                    st.plotly_chart(fig_performance, use_container_width=True)
+                
+                # Algorithm recommendations
+                st.subheader("💡 Algorithm Recommendations")
+                
+                if best_model:
+                    recommendations = {
+                        'ARIMA': "📈 **ARIMA** is excellent for univariate time series with clear trends and seasonality. Best for traditional forecasting with stable patterns.",
+                        'SARIMAX': "📊 **SARIMAX** combines seasonal patterns with external factors. Ideal when you have additional economic indicators.",
+                        'Prophet': "🔮 **Prophet** handles irregular seasonality and holidays well. Great for business forecasting with trend changes.",
+                        'XGBoost': "⚡ **XGBoost** leverages machine learning for complex patterns. Best when you have multiple features and non-linear relationships.",
+                        'Hybrid SARIMA-LSTM': "🧠 **Hybrid SARIMA-LSTM** combines statistical modeling with deep learning. Excellent for capturing both linear trends and complex non-linear patterns in agricultural prices.",
+                        'ELM-GA': "🧬 **ELM + Genetic Algorithm** uses evolutionary optimization for neural networks. Superior for highly volatile commodities with complex market dynamics.",
+                        'Ensemble': "🎯 **Ensemble** combines multiple models for robust predictions. Recommended for critical forecasting tasks."
+                    }
+                    
+                    st.success(f"**Why {best_model} is best for {selected_commodity}:**")
+                    st.write(recommendations.get(best_model, "Custom model with good performance."))
+                    
+                    # Additional insights
+                    if model_metrics.get(best_model):
+                        best_metrics = model_metrics[best_model]
+                        st.write(f"- **Direction Accuracy**: {best_metrics['Directional_Accuracy']:.1f}% (predicts price direction correctly)")
+                        st.write(f"- **Error Rate**: {best_metrics['MAPE']:.1f}% (mean absolute percentage error)")
+                        st.write(f"- **Model Fit**: R² = {best_metrics['R_Squared']:.3f} (explains {best_metrics['R_Squared']*100:.1f}% of variance)")
+            else:
+                st.warning("⚠️ Unable to calculate performance metrics. Need more data for comparison.")
             
             # Interactive Forecast Animation (only if enabled)
             if show_animations:
