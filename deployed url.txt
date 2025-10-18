@@ -1,3 +1,0 @@
-App Deployed (Yearly Data): https://hortimarketpredict.streamlit.app/
-
-App Deployed (Monthly Data): https://hortipredict.streamlit.app/

@@ -178,35 +178,6 @@ class AdvancedCommodityForecaster:
         except Exception as e:
             st.warning(f"Prophet training failed: {e}")
             return None, None
-    
-    def train_xgboost(self, data, features):
-        """Train XGBoost model"""
-        try:
-            X, y = self.prepare_data_for_xgboost(data, features)
-            
-            if len(X) < 5:  # Need minimum data points
-                return None
-            
-            # Split for training (use first 80% for training)
-            split_idx = int(0.8 * len(X))
-            X_train, y_train = X[:split_idx], y[:split_idx]
-            
-            # Scale features
-            X_train_scaled = self.scaler.fit_transform(X_train)
-            
-            # Train XGBoost
-            model = xgb.XGBRegressor(
-                n_estimators=100,
-                max_depth=3,
-                learning_rate=0.1,
-                random_state=42
-            )
-            model.fit(X_train_scaled, y_train)
-            
-            return model
-        except Exception as e:
-            st.warning(f"XGBoost training failed: {e}")
-            return None
 
     def prepare_lstm_data(self, data, lookback=5):
         """Prepare data for LSTM training"""
@@ -374,42 +345,15 @@ class AdvancedCommodityForecaster:
                             future.loc[i, col] = last_values[-1] + trend * (i - len(prophet_data) + 1)
             
             forecast = model.predict(future)
-            return forecast['yhat'].tail(steps).values
+            predictions = forecast['yhat'].tail(steps).values
+            
+            # Ensure no negative values - use maximum of 0 or predicted value
+            predictions = np.maximum(predictions, 0)
+            
+            return predictions
         except:
             return None
     
-    def forecast_xgboost(self, model, data, features, steps=5):
-        """Generate XGBoost forecasts"""
-        try:
-            predictions = []
-            current_data = data.values.copy()
-            
-            for step in range(steps):
-                # Prepare input for prediction
-                X_input = []
-                
-                # Add lagged values
-                for lag in range(1, 4):  # lookback=3
-                    X_input.append(current_data[-(lag)])
-                
-                # Add extrapolated features
-                last_year_features = features.iloc[-1].values
-                X_input.extend(last_year_features)
-                
-                X_input = np.array(X_input).reshape(1, -1)
-                X_input_scaled = self.scaler.transform(X_input)
-                
-                # Predict
-                pred = model.predict(X_input_scaled)[0]
-                predictions.append(pred)
-                
-                # Update current_data
-                current_data = np.append(current_data, pred)
-            
-            return np.array(predictions)
-        except:
-            return None
-
     def forecast_hybrid_sarima_lstm(self, sarima_model, lstm_model, lstm_scaler, residuals, steps=5):
         """Generate Hybrid SARIMA-LSTM forecasts"""
         try:
@@ -1011,67 +955,14 @@ def main():
     use_sarimax = st.sidebar.checkbox("📈 SARIMAX Model", value=True, help="Statistical time series analysis")
     use_prophet = st.sidebar.checkbox("🔮 Prophet Model", value=True, help="Advanced seasonal forecasting")
     
-    # Machine Learning Models
-    st.sidebar.markdown("**🤖 Machine Learning Models**")
-    use_xgboost = st.sidebar.checkbox("⚡ XGBoost Model", value=True, help="Gradient boosting machine learning")
-    
-    # Advanced Hybrid Models
-    st.sidebar.markdown("**🚀 Advanced Hybrid Models**")
-    use_hybrid_sarima_lstm = st.sidebar.checkbox("🧠 Hybrid SARIMA-LSTM", value=False, help="Deep learning hybrid combining SARIMA with LSTM neural networks")
-    use_elm_genetic = st.sidebar.checkbox("🧬 ELM + Genetic Algorithm", value=False, help="Extreme Learning Machine optimized with Genetic Algorithm")
-    
-    # Ensemble
-    st.sidebar.markdown("**🎯 Ensemble**")
-    use_ensemble = st.sidebar.checkbox("🎯 Ensemble Forecast", value=True, help="Combined predictions from all models")
-    
     # Visualization controls
     st.sidebar.subheader("📊 Visualization Options")
     show_animations = st.sidebar.checkbox("🎬 Enable Animations", value=True)
     show_correlations = st.sidebar.checkbox("🔥 Show Correlations", value=True)
     interactive_mode = st.sidebar.checkbox("🖱️ Interactive Mode", value=False)  # Temporarily disabled
     
-    # Model Rankings Section
-    st.sidebar.markdown("---")
-    with st.sidebar.expander("🏆 **Model Rankings & Proof**", expanded=False):
-        st.markdown("### 🥇 **CHAMPION: ELM-GA**")
-        st.markdown("**59.1% Win Rate** (13/22 commodities)")
-        st.markdown("**R² Score: 0.891** ⭐⭐⭐⭐⭐")
-        st.markdown("*Best for: Grains, Oils, Vegetables*")
-        
-        st.markdown("### 🥈 **RUNNER-UP: XGBoost**")
-        st.markdown("**40.9% Win Rate** (9/22 commodities)")
-        st.markdown("**R² Score: 0.847** ⭐⭐⭐⭐")
-        st.markdown("*Best for: Pulses, Specialty Items*")
-        
-        st.markdown("### 🥉 **THIRD: Prophet**")
-        st.markdown("**Consistent 3rd Place**")
-        st.markdown("**R² Score: 0.763** ⭐⭐⭐")
-        st.markdown("*Best for: Baseline Predictions*")
-        
-        st.markdown("---")
-        st.markdown("#### 📊 **Scientific Validation**")
-        st.markdown("✅ **ANOVA F-test**: p < 0.001")
-        st.markdown("✅ **Effect Size**: Cohen's d > 0.96")
-        st.markdown("✅ **Confidence**: 99.9%")
-        
-        st.markdown("#### 💼 **Business Impact**")
-        st.markdown("📈 **Accuracy**: >89% average")
-        st.markdown("💰 **ROI**: 300-500% within year")
-        st.markdown("🎯 **Coverage**: 100% commodities")
-        
-        if st.button("📄 View Full Proof Report"):
-            st.balloons()
-            st.success("🎉 Check Final_Model_Ranking_Proof_Report.md in project folder!")
-            
-        if st.button("📊 View Proof Charts"):
-            try:
-                import os
-                if os.path.exists("comprehensive_model_ranking_proof.png"):
-                    st.image("comprehensive_model_ranking_proof.png", caption="🏆 Comprehensive Model Ranking Proof")
-                else:
-                    st.warning("Proof charts not found. Run final_model_proof.py first!")
-            except Exception as e:
-                st.error(f"Error loading charts: {e}")
+    # Load data
+    data, df_features = forecaster.load_data()
     
     if st.sidebar.button("🚀 Generate Forecasts"):
         
@@ -1145,50 +1036,6 @@ def main():
                         st.success("✅ Prophet model trained successfully")
                     else:
                         st.error("❌ Prophet model failed")
-            
-            if use_xgboost:
-                with st.expander("🚀 XGBoost Model"):
-                    xgb_model = forecaster.train_xgboost(data, df_features)
-                    if xgb_model:
-                        xgb_pred = forecaster.forecast_xgboost(xgb_model, data, df_features)
-                        predictions['XGBoost'] = xgb_pred
-                        st.success("✅ XGBoost model trained successfully")
-                    else:
-                        st.error("❌ XGBoost model failed")
-            
-            if use_hybrid_sarima_lstm:
-                with st.expander("🧠 Hybrid SARIMA-LSTM Model"):
-                    st.info("🔄 Training advanced hybrid model... This may take a moment.")
-                    sarima_model, lstm_model, lstm_scaler, residuals = forecaster.train_hybrid_sarima_lstm(data)
-                    if sarima_model:
-                        hybrid_pred = forecaster.forecast_hybrid_sarima_lstm(sarima_model, lstm_model, lstm_scaler, residuals)
-                        predictions['Hybrid SARIMA-LSTM'] = hybrid_pred
-                        if lstm_model is not None:
-                            st.success("✅ Hybrid SARIMA-LSTM model trained successfully")
-                            st.info("🧠 Deep learning LSTM component active for residual modeling")
-                        else:
-                            st.success("✅ SARIMA component trained (LSTM fallback)")
-                            st.warning("⚠️ LSTM component failed, using SARIMA only")
-                    else:
-                        st.error("❌ Hybrid SARIMA-LSTM model failed")
-            
-            if use_elm_genetic:
-                with st.expander("🧬 ELM + Genetic Algorithm Model"):
-                    st.info("🔄 Optimizing ELM with Genetic Algorithm... This may take a moment.")
-                    elm_model, elm_scaler = forecaster.train_elm_genetic(data, df_features)
-                    if elm_model and elm_scaler:
-                        elm_pred = forecaster.forecast_elm_genetic(elm_model, elm_scaler, data, df_features)
-                        predictions['ELM-GA'] = elm_pred
-                        st.success("✅ ELM + Genetic Algorithm model trained successfully")
-                        st.info("🧬 Neural network optimized with evolutionary algorithm")
-                    else:
-                        st.error("❌ ELM + Genetic Algorithm model failed")
-        
-        # Generate ensemble forecast
-        if use_ensemble and len(predictions) > 1:
-            ensemble_pred = forecaster.ensemble_forecast(predictions)
-            if ensemble_pred is not None:
-                predictions['Ensemble'] = ensemble_pred
         
         # Display dynamic forecasts
         if predictions:
@@ -1204,311 +1051,8 @@ def main():
             
             # Display forecast table with styling
             st.subheader("📊 Forecast Summary Table")
-            styled_df = forecast_df.style.format("₹{:.2f}").background_gradient(cmap='RdYlGn')
+            styled_df = forecast_df.style.format("₹{:.2f}")
             st.dataframe(styled_df, use_container_width=True)
-            
-            # 🏆 ALGORITHM PERFORMANCE COMPARISON
-            st.subheader("🏆 Algorithm Performance Comparison")
-            
-            # Calculate model performance metrics
-            model_metrics = forecaster.calculate_model_performance(data, predictions)
-            best_model, model_scores = forecaster.find_best_algorithm(model_metrics)
-            
-            if best_model and model_scores:
-                # Display best algorithm
-                col1, col2, col3 = st.columns([2, 1, 1])
-                
-                with col1:
-                    st.success(f"🥇 **Best Algorithm: {best_model}**")
-                    best_score = model_scores[best_model]['Overall_Score']
-                    st.metric("Performance Score", f"{best_score:.1f}/100", 
-                             delta=f"+{best_score-50:.1f}" if best_score > 50 else f"{best_score-50:.1f}")
-                
-                with col2:
-                    st.info("📊 **Ranking:**")
-                    sorted_models = sorted(model_scores.items(), 
-                                         key=lambda x: x[1]['Overall_Score'], reverse=True)
-                    for i, (model, score) in enumerate(sorted_models):
-                        medal = ["🥇", "🥈", "🥉", "🏅", "⭐"][min(i, 4)]
-                        st.write(f"{medal} {model}: {score['Overall_Score']:.1f}")
-                
-                with col3:
-                    st.info("📋 **Criteria:**")
-                    st.write("• Prediction Accuracy (30%)")
-                    st.write("• Error Magnitude (20%)")
-                    st.write("• Direction Accuracy (30%)")
-                    st.write("• Model Fit (20%)")
-                
-                # Detailed metrics table
-                st.subheader("📈 Detailed Performance Metrics")
-                
-                if model_metrics:
-                    metrics_df = pd.DataFrame(model_metrics).T
-                    metrics_df = metrics_df.round(3)
-                    
-                    # Style the dataframe
-                    styled_metrics = metrics_df.style.format({
-                        'MSE': '{:.3f}',
-                        'MAE': '{:.3f}',
-                        'RMSE': '{:.3f}',
-                        'MAPE': '{:.2f}%',
-                        'Directional_Accuracy': '{:.1f}%',
-                        'R_Squared': '{:.3f}',
-                        'Performance_Score': '{:.1f}'
-                    }).background_gradient(subset=['Performance_Score'], cmap='RdYlGn')
-                    
-                    st.dataframe(styled_metrics, use_container_width=True)
-                    
-                    # Performance visualization
-                    fig_performance = go.Figure()
-                    
-                    models = list(model_scores.keys())
-                    scores = [model_scores[model]['Overall_Score'] for model in models]
-                    colors = ['gold' if model == best_model else 'lightblue' for model in models]
-                    
-                    fig_performance.add_trace(go.Bar(
-                        x=models,
-                        y=scores,
-                        marker_color=colors,
-                        text=[f'{score:.1f}' for score in scores],
-                        textposition='auto',
-                        name='Performance Score'
-                    ))
-                    
-                    fig_performance.update_layout(
-                        title="🏆 Algorithm Performance Comparison",
-                        xaxis_title="Algorithm",
-                        yaxis_title="Performance Score (0-100)",
-                        showlegend=False,
-                        height=400
-                    )
-                    
-                    st.plotly_chart(fig_performance, use_container_width=True)
-                
-                # Algorithm recommendations
-                st.subheader("💡 Algorithm Recommendations")
-                
-                if best_model:
-                    recommendations = {
-                        'ARIMA': "📈 **ARIMA** is excellent for univariate time series with clear trends and seasonality. Best for traditional forecasting with stable patterns.",
-                        'SARIMAX': "📊 **SARIMAX** combines seasonal patterns with external factors. Ideal when you have additional economic indicators.",
-                        'Prophet': "🔮 **Prophet** handles irregular seasonality and holidays well. Great for business forecasting with trend changes.",
-                        'XGBoost': "⚡ **XGBoost** leverages machine learning for complex patterns. Best when you have multiple features and non-linear relationships.",
-                        'Hybrid SARIMA-LSTM': "🧠 **Hybrid SARIMA-LSTM** combines statistical modeling with deep learning. Excellent for capturing both linear trends and complex non-linear patterns in agricultural prices.",
-                        'ELM-GA': "🧬 **ELM + Genetic Algorithm** uses evolutionary optimization for neural networks. Superior for highly volatile commodities with complex market dynamics.",
-                        'Ensemble': "🎯 **Ensemble** combines multiple models for robust predictions. Recommended for critical forecasting tasks."
-                    }
-                    
-                    st.success(f"**Why {best_model} is best for {selected_commodity}:**")
-                    st.write(recommendations.get(best_model, "Custom model with good performance."))
-                    
-                    # Additional insights
-                    if model_metrics.get(best_model):
-                        best_metrics = model_metrics[best_model]
-                        st.write(f"- **Direction Accuracy**: {best_metrics['Directional_Accuracy']:.1f}% (predicts price direction correctly)")
-                        st.write(f"- **Error Rate**: {best_metrics['MAPE']:.1f}% (mean absolute percentage error)")
-                        st.write(f"- **Model Fit**: R² = {best_metrics['R_Squared']:.3f} (explains {best_metrics['R_Squared']*100:.1f}% of variance)")
-                
-                # 🏆 OVERALL BEST MODEL ANALYSIS
-                st.subheader("🏆 Overall Best Model for Agricultural Price Prediction")
-                
-                # Create comprehensive analysis
-                overall_analysis_col1, overall_analysis_col2 = st.columns([2, 1])
-                
-                with overall_analysis_col1:
-                    st.success(f"🎯 **RECOMMENDED MODEL: {best_model}**")
-                    
-                    # Model category and description
-                    model_categories = {
-                        'ARIMA': ('Traditional Statistical', 'Classic time series analysis with autoregressive integrated moving average'),
-                        'SARIMAX': ('Statistical with External Factors', 'Seasonal ARIMA with external economic variables'),
-                        'Prophet': ('Modern Statistical', 'Facebook\'s robust forecasting tool with trend and seasonality'),
-                        'XGBoost': ('Machine Learning', 'Gradient boosting with feature engineering'),
-                        'Hybrid SARIMA-LSTM': ('Advanced Hybrid AI', 'Statistical modeling combined with deep learning neural networks'),
-                        'ELM-GA': ('Evolutionary AI', 'Extreme Learning Machine optimized with Genetic Algorithm')
-                    }
-                    
-                    category, description = model_categories.get(best_model, ('Custom', 'Advanced forecasting model'))
-                    
-                    st.markdown(f"""
-                    **Model Category:** {category}
-                    
-                    **Description:** {description}
-                    
-                    **Why This Model Excels for {selected_commodity}:**
-                    """)
-                    
-                    # Detailed analysis based on best model
-                    if best_model == 'Hybrid SARIMA-LSTM':
-                        st.markdown("""
-                        🧠 **Hybrid SARIMA-LSTM** combines the best of both worlds:
-                        - **Statistical Foundation**: SARIMA captures seasonal patterns and trends
-                        - **Deep Learning Power**: LSTM neural networks learn complex non-linear relationships
-                        - **Agricultural Advantage**: Handles both predictable seasonal cycles and unpredictable market shocks
-                        - **Multi-factor Integration**: Processes weather, economic, and policy factors simultaneously
-                        """)
-                    elif best_model == 'ELM-GA':
-                        st.markdown("""
-                        🧬 **ELM + Genetic Algorithm** uses evolutionary optimization:
-                        - **Rapid Learning**: Extreme Learning Machine trains faster than traditional neural networks
-                        - **Genetic Optimization**: Evolutionary algorithm finds optimal network parameters
-                        - **Market Adaptation**: Continuously evolves to changing market conditions
-                        - **Volatility Handling**: Excellent for highly volatile agricultural commodities
-                        """)
-                    elif best_model == 'XGBoost':
-                        st.markdown("""
-                        ⚡ **XGBoost** leverages gradient boosting:
-                        - **Feature Importance**: Automatically identifies key price drivers
-                        - **Non-linear Patterns**: Captures complex relationships between variables
-                        - **Robust Performance**: Handles missing data and outliers well
-                        - **Economic Integration**: Effectively uses external economic indicators
-                        """)
-                    elif best_model == 'Prophet':
-                        st.markdown("""
-                        🔮 **Prophet** excels at business forecasting:
-                        - **Trend Detection**: Automatically identifies trend changes
-                        - **Seasonality**: Handles multiple seasonal patterns
-                        - **Holiday Effects**: Accounts for special events and policy changes
-                        - **Uncertainty Quantification**: Provides confidence intervals
-                        """)
-                    elif best_model == 'SARIMAX':
-                        st.markdown("""
-                        📊 **SARIMAX** combines seasonality with external factors:
-                        - **Seasonal Patterns**: Captures agricultural seasonal cycles
-                        - **External Variables**: Integrates weather, economic, and policy data
-                        - **Statistical Rigor**: Well-established statistical foundation
-                        - **Interpretability**: Provides clear parameter interpretations
-                        """)
-                    else:  # ARIMA
-                        st.markdown("""
-                        📈 **ARIMA** provides classical time series analysis:
-                        - **Trend Analysis**: Captures long-term price trends
-                        - **Autoregression**: Uses historical prices for prediction
-                        - **Moving Average**: Smooths out random fluctuations
-                        - **Proven Method**: Time-tested approach with strong theoretical foundation
-                        """)
-                
-                with overall_analysis_col2:
-                    st.info("📊 **Performance Metrics**")
-                    if best_model in model_metrics:
-                        metrics = model_metrics[best_model]
-                        st.metric("🎯 Accuracy", f"{metrics['Directional_Accuracy']:.1f}%")
-                        st.metric("📉 Error Rate", f"{metrics['MAPE']:.1f}%")
-                        st.metric("📈 Model Fit", f"{metrics['R_Squared']:.3f}")
-                        st.metric("⚡ RMSE", f"₹{metrics['RMSE']:.2f}")
-                    
-                    # Performance grade
-                    if best_model in model_scores:
-                        score = model_scores[best_model]['Overall_Score']
-                        if score >= 80:
-                            grade = "A+"
-                            color = "success"
-                        elif score >= 70:
-                            grade = "A"
-                            color = "success"
-                        elif score >= 60:
-                            grade = "B+"
-                            color = "info"
-                        elif score >= 50:
-                            grade = "B"
-                            color = "warning"
-                        else:
-                            grade = "C"
-                            color = "error"
-                        
-                        if color == "success":
-                            st.success(f"🏆 Grade: **{grade}**")
-                        elif color == "info":
-                            st.info(f"📊 Grade: **{grade}**")
-                        elif color == "warning":
-                            st.warning(f"⚠️ Grade: **{grade}**")
-                        else:
-                            st.error(f"❌ Grade: **{grade}**")
-                
-                # Algorithm Comparison Summary
-                st.subheader("📋 Complete Algorithm Analysis Summary")
-                
-                # Create comprehensive comparison table
-                if model_scores:
-                    comparison_data = []
-                    for model_name in model_scores.keys():
-                        score = model_scores[model_name]['Overall_Score']
-                        if model_name in model_metrics:
-                            metrics = model_metrics[model_name]
-                            comparison_data.append({
-                                'Algorithm': model_name,
-                                'Overall_Score': f"{score:.1f}/100",
-                                'Grade': 'A+' if score >= 80 else 'A' if score >= 70 else 'B+' if score >= 60 else 'B' if score >= 50 else 'C',
-                                'Direction_Accuracy': f"{metrics['Directional_Accuracy']:.1f}%",
-                                'Error_Rate': f"{metrics['MAPE']:.1f}%",
-                                'Model_Fit': f"{metrics['R_Squared']:.3f}",
-                                'RMSE': f"₹{metrics['RMSE']:.2f}",
-                                'Category': model_categories.get(model_name, ('Other', ''))[0],
-                                'Best_For': {
-                                    'ARIMA': 'Stable trends, traditional analysis',
-                                    'SARIMAX': 'Seasonal patterns + external factors',
-                                    'Prophet': 'Business forecasting, trend changes',
-                                    'XGBoost': 'Complex patterns, multiple features',
-                                    'Hybrid SARIMA-LSTM': 'Agricultural commodities, hybrid AI',
-                                    'ELM-GA': 'Volatile markets, evolutionary optimization'
-                                }.get(model_name, 'General forecasting')
-                            })
-                    
-                    comparison_df = pd.DataFrame(comparison_data)
-                    comparison_df = comparison_df.sort_values('Overall_Score', ascending=False)
-                    
-                    # Display styled table
-                    st.dataframe(
-                        comparison_df.style.format({
-                            'Overall_Score': '{}',
-                            'Direction_Accuracy': '{}',
-                            'Error_Rate': '{}',
-                            'Model_Fit': '{}',
-                            'RMSE': '{}'
-                        }).apply(lambda x: ['background-color: #90EE90' if x.name == 0 else '' for i in x], axis=1),
-                        use_container_width=True
-                    )
-                
-                # Final Recommendation
-                st.subheader("🎯 Final Recommendation & Implementation")
-                
-                recommendation_col1, recommendation_col2 = st.columns([3, 1])
-                
-                with recommendation_col1:
-                    st.success(f"""
-                    ### ✅ IMPLEMENT {best_model.upper()} FOR {selected_commodity.upper()} PRICE PREDICTION
-                    
-                    **Confidence Level**: {model_scores[best_model]['Overall_Score']:.1f}/100
-                    
-                    **Implementation Steps**:
-                    1. Deploy {best_model} as primary forecasting model
-                    2. Set up automated daily/weekly prediction updates
-                    3. Monitor performance with real-time validation
-                    4. Implement alert system for prediction accuracy drops
-                    5. Consider ensemble approach combining top 2-3 models for critical decisions
-                    
-                    **Expected Benefits**:
-                    - {model_metrics[best_model]['Directional_Accuracy']:.1f}% accuracy in predicting price direction
-                    - {model_metrics[best_model]['MAPE']:.1f}% average prediction error
-                    - Reliable forecasts for agricultural planning and decision making
-                    """)
-                
-                with recommendation_col2:
-                    st.info("""
-                    **Next Steps**:
-                    
-                    🚀 **Deploy Model**
-                    
-                    📊 **Monitor Performance**
-                    
-                    🔄 **Regular Updates**
-                    
-                    📈 **Scale to Other Commodities**
-                    
-                    🤖 **Automation Setup**
-                    """)
-            else:
-                st.warning("⚠️ Unable to calculate performance metrics. Need more data for comparison.")
             
             # Interactive Forecast Animation (only if enabled)
             if show_animations:
@@ -1650,68 +1194,7 @@ def main():
                     )
                     st.plotly_chart(fig, use_container_width=True)
             
-            # Footer with Model Rankings Summary
-            st.markdown("---")
-            st.markdown("## 🏆 **Model Performance Summary**")
-            
-            col_footer1, col_footer2, col_footer3 = st.columns(3)
-            
-            with col_footer1:
-                st.markdown("""
-                ### 🥇 **CHAMPION**
-                **ELM-GA (Extreme Learning Machine + Genetic Algorithm)**
-                - 🎯 **Win Rate**: 59.1% (13/22 commodities)
-                - 📊 **R² Score**: 0.891
-                - ⭐ **Rating**: ⭐⭐⭐⭐⭐
-                - 🎪 **Best For**: Rice, Wheat, Oils, Vegetables
-                """)
-            
-            with col_footer2:
-                st.markdown("""
-                ### 🥈 **RUNNER-UP**
-                **XGBoost (Extreme Gradient Boosting)**
-                - 🎯 **Win Rate**: 40.9% (9/22 commodities)
-                - 📊 **R² Score**: 0.847
-                - ⭐ **Rating**: ⭐⭐⭐⭐
-                - 🎪 **Best For**: Pulses, Specialty Items
-                """)
-            
-            with col_footer3:
-                st.markdown("""
-                ### 🥉 **THIRD PLACE**
-                **Prophet (Facebook's Time Series)**
-                - 🎯 **Win Rate**: Consistent 3rd place
-                - 📊 **R² Score**: 0.763
-                - ⭐ **Rating**: ⭐⭐⭐
-                - 🎪 **Best For**: Baseline Predictions
-                """)
-            
-            # Scientific Validation Summary
-            st.markdown("---")
-            st.markdown("### 🔬 **Scientific Validation & Business Impact**")
-            
-            col_sci1, col_sci2, col_sci3, col_sci4 = st.columns(4)
-            
-            with col_sci1:
-                st.metric("ANOVA F-test", "10.95", "p < 0.001")
-            with col_sci2:
-                st.metric("Effect Size", "0.96+", "Large Effect")
-            with col_sci3:
-                st.metric("Confidence", "99.9%", "Highly Significant")
-            with col_sci4:
-                st.metric("Expected ROI", "300-500%", "Within 1 Year")
-            
-            # Final Proof CTA
-            st.markdown("---")
-            col_cta1, col_cta2, col_cta3 = st.columns([1, 2, 1])
-            with col_cta2:
-                st.markdown("""
-                <div style='text-align: center; padding: 20px; background-color: #f0f8ff; border-radius: 10px; border: 2px solid #4CAF50;'>
-                    <h3>🎉 <strong>SCIENTIFICALLY PROVEN RANKINGS</strong> 🎉</h3>
-                    <p><strong>Based on comprehensive testing of 6 AI models across 22 commodities over 11 years</strong></p>
-                    <p>🏆 <strong>ELM-GA</strong> is the overall champion for agricultural price prediction!</p>
-                </div>
-                """, unsafe_allow_html=True)
+
         
         else:
             st.error("No valid predictions generated. Please check your data and model settings.")
