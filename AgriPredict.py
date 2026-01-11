@@ -35,14 +35,15 @@ if st.button("Submit"):
     st.write(f"### {selected_commodity} Price Forecast (2025-2029)")
     st.write(forecast_df)
 
-    plt.figure(figsize=(10, 6))
+    fig = plt.figure(figsize=(10, 6))
     plt.plot(data, label=f'Actual {selected_commodity} Prices')
     plt.plot(forecast_years, forecasted_values, label=f'Forecasted {selected_commodity} Prices', color='orange')
     plt.title(f'{selected_commodity} Price Forecast (2025-2029)')
     plt.xlabel('Year')
     plt.ylabel('Price')
     plt.legend()
-    st.pyplot(plt)
+    st.pyplot(fig)
+    plt.close()
 
     train_rmse = np.sqrt(((data - sarimax_model.fittedvalues) ** 2).mean())
     st.write(f"Training RMSE: {train_rmse:.4f}")
