@@ -40,7 +40,7 @@ if st.button("Submit"):
     plt.title(f'{selected_commodity} Price Forecast (2025-2029)')
     plt.xlabel('Year')
     plt.ylabel('Price')
-    plt.legend(loc='upper left', bbox_to_anchor=(0, 1), framealpha=0.9)
+    plt.legend(loc='upper left', bbox_to_anchor=(1.05, 1), framealpha=0.9)
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
